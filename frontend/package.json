@@ -1,0 +1,19 @@
+{
+  "name": "jrf-task-llm-ui",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host localhost --port 3000 --strictPort",
+    "build": "vite build"
+  },
+  "dependencies": {
+    "pdfjs-dist": "^4.8.69",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "react-pdf": "^9.2.1"
+  },
+  "devDependencies": {
+    "vite": "^6.3.0"
+  }
+}

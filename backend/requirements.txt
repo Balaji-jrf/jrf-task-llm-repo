@@ -1,0 +1,4 @@
+huggingface-hub>=0.30,<2.0
+langchain-community>=0.4,<1.0
+langgraph>=1.0,<2.0
+llama-cpp-python>=0.3.35,<0.4
