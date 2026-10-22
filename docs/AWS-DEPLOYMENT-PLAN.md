@@ -5,6 +5,37 @@ This guide does not deploy anything automatically. Check the AWS region, availab
 domain, current tester IP addresses, account access, and spending limit before
 running the commands. Stop or terminate the EC2 instance after the demonstration.
 
+## Current staging deployment
+
+The following resources are already running in account `433448338709`, region
+`ap-southeast-2`:
+
+| Component | Current value |
+|---|---|
+| Frontend | [https://main.d326ha2ayic9km.amplifyapp.com](https://main.d326ha2ayic9km.amplifyapp.com) |
+| Amplify app / branch | `d326ha2ayic9km` / `main` |
+| Backend API | [https://api-jrf-llm-pipeline.skillrouteai.com/api/health](https://api-jrf-llm-pipeline.skillrouteai.com/api/health) |
+| EC2 instance | `i-005c4103fae0b04c9` (`m7i.large`, 2 vCPU / 8 GiB) |
+| EC2 public address | `3.107.163.225` |
+| Security group | `sg-000441cccebd5a693` |
+| Model | Qwen2.5-1.5B-Instruct-Q4_K_M GGUF |
+| Backend CORS origin | `https://main.d326ha2ayic9km.amplifyapp.com` |
+
+The Amplify artifact was uploaded manually from `frontend/dist`; the app is not
+connected to GitHub and automatic branch builds are disabled. The API currently
+allows HTTPS only from the confirmed tester `/32`; port 80 is open for Caddy's
+HTTP redirect and certificate validation. The existing
+`jrf-llm-pipeline.skillrouteai.com` hostname was left unchanged. Use the Amplify
+branch URL above for the new frontend. No Elastic IP is attached, so stopping and
+starting the instance can change its public address; update the API A record if
+that happens.
+
+The AWS Price List currently reports `$0.126/hour` for this EC2 instance type in
+Sydney (about `$3.02` for 24 hours). The encrypted 30-GiB gp3 volume, public IPv4,
+data transfer, taxes, and Amplify usage are additional; actual charges vary.
+Terminate the EC2 instance after the demonstration to stay within the approved
+one-day budget.
+
 ## 1. Architecture and request flow
 
 ```mermaid
@@ -207,9 +238,9 @@ the `PUBLIC_IP`. Do not change existing site records. Verify DNS before installi
 dig +short api-llm.<your-domain>
 ```
 
-Create the Amplify app in the AWS Console by connecting the GitHub repo and branch.
-The repository contains `amplify.yml`; set its monorepo app root to `frontend` if
-the console asks for it. If needed, add the Amplify environment variable
+For a GitHub-connected Amplify app, connect the repository and branch in the AWS
+Console. The repository contains `amplify.yml`; set its monorepo app root to
+`frontend` if the console asks for it. If needed, add
 `AMPLIFY_MONOREPO_APP_ROOT=frontend`. Once Amplify displays its branch URL, copy
 that exact HTTPS origin, such as `https://main.<app-id>.amplifyapp.com`.
 
@@ -272,6 +303,14 @@ Save and redeploy the branch after changing environment variables. In **Hosting 
 Custom domains**, attach `llm.<your-domain>` and apply the exact DNS records Amplify
 shows. Keep the API and UI on separate hostnames. When the custom UI domain is
 active, add its origin to the backend CORS list and restart the service.
+
+The current staging app is a manual Amplify deployment, not a GitHub-connected
+build. Its environment variables are saved in Amplify, and the uploaded build was
+compiled with the same values. To enable automatic deployments for future code
+changes, connect the GitHub repository to this app in the Amplify Console and
+verify the `main` branch build before relying on CI/CD. Do not associate
+`jrf-llm-pipeline.skillrouteai.com` with this app without first confirming that
+its existing site is safe to replace.
 
 The Amplify build variables are public because Vite embeds `VITE_*` values into the
 JavaScript. They must contain only public URLs, never tokens, credentials, or API
