@@ -35,11 +35,16 @@ class LocalApiTests(unittest.TestCase):
             return response.status, response.headers, json.load(response)
 
     def test_models_endpoint_returns_allow_list_with_local_cors(self):
-        status, headers, body = self._request("/api/models")
+        available = [
+            {"model_id": LOCAL_CHAT_MODEL_ID, "display_name": "Local Qwen", "enabled": True},
+            {"model_id": "Qwen2.5-7B-Instruct-Q4_K_M", "display_name": "Qwen 7B", "enabled": True},
+        ]
+        with patch.object(local_server.local_model, "available_models", return_value=available):
+            status, headers, body = self._request("/api/models")
 
         self.assertEqual(status, 200)
         self.assertEqual(headers["Access-Control-Allow-Origin"], "http://localhost:3000")
-        self.assertEqual(body["models"], [{"model_id": LOCAL_CHAT_MODEL_ID, "enabled": True}])
+        self.assertEqual(body["models"], available)
 
     def test_health_endpoint_returns_ok(self):
         status, _, body = self._request("/api/health")

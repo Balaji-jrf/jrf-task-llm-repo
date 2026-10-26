@@ -50,6 +50,13 @@ export default function HistoryOfLLMChat({
             <button type="button" onClick={() => openChat(chat.chat_id)}>
               <strong>{chat.title || 'Research conversation'}</strong>
               <span>{chat.turn_count || 0} turns · {chat.document_ids?.length || 0} documents</span>
+              {chat.model_ids?.length > 0 && (
+                <span className="llm-history-model-tags">
+                  {chat.model_ids.map((modelId) => (
+                    <em key={modelId}>{modelId}</em>
+                  ))}
+                </span>
+              )}
               <time dateTime={chat.updated_at}>
                 {new Date(chat.updated_at).toLocaleString()}
               </time>

@@ -28,6 +28,12 @@ class LocalChatStoreTests(unittest.TestCase):
                     ],
                 }
                 chat_store.append_turn(chat_id, turn)
+                second_model_id = "Qwen2.5-7B-Instruct-Q4_K_M"
+                chat_store.append_turn(chat_id, {
+                    **turn,
+                    "model_ids": [second_model_id],
+                    "answers": [{"model_id": second_model_id, "text": "Another answer [S1]."}],
+                })
 
                 record = chat_store.get_chat(chat_id)
                 history = chat_store.recent_history(chat_id)
@@ -42,7 +48,11 @@ class LocalChatStoreTests(unittest.TestCase):
             turn["retrieved_sources"][0]["bbox"],
         )
         self.assertEqual(record["turns"][0]["retrieved_sources"][0]["score"], 1.25)
-        self.assertEqual(summaries[0]["turn_count"], 1)
+        self.assertEqual(summaries[0]["turn_count"], 2)
+        self.assertEqual(
+            record["chat"]["model_ids"],
+            [LOCAL_CHAT_MODEL_ID, second_model_id],
+        )
 
 
 if __name__ == "__main__":

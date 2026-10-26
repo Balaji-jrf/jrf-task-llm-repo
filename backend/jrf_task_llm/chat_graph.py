@@ -1,9 +1,12 @@
 from typing import TypedDict
+import logging
 
 from langgraph.graph import END, START, StateGraph
 
 from . import chat_store, local_model, vector_store
 from .config import DEFAULT_TOP_K, MAX_TOP_K
+
+LOGGER = logging.getLogger(__name__)
 
 
 class ChatState(TypedDict, total=False):
@@ -14,7 +17,7 @@ class ChatState(TypedDict, total=False):
     top_k: int
     history: list[dict]
     retrieved: list[dict]
-    answer: dict
+    answers: list[dict]
     result: dict
 
 
@@ -33,28 +36,43 @@ def retrieve_context(state: ChatState) -> dict:
 
 
 def answer_question(state: ChatState) -> dict:
-    return {
-        "answer": local_model.answer_question(
-            state["question"],
-            state["retrieved"],
-            state["history"],
-        )
-    }
+    answers = []
+    for model_id in state["model_ids"]:
+        try:
+            answers.append(local_model.answer_question(
+                model_id,
+                state["question"],
+                state["retrieved"],
+                state["history"],
+            ))
+        except Exception as exc:
+            LOGGER.exception("Local model inference failed: model_id=%s", model_id)
+            answers.append({
+                "model_id": model_id,
+                "error": str(exc)[:500],
+            })
+    return {"answers": answers}
 
 
 def persist_result(state: ChatState) -> dict:
     retrieved = state["retrieved"]
-    answer = state["answer"]
+    answers = state["answers"]
     document_ids = state["document_ids"]
     model_ids = state["model_ids"]
     used_documents = sorted({item["document_id"] for item in retrieved})
+    successful_answers = [answer for answer in answers if not answer.get("error")]
+    status = (
+        "failed" if not successful_answers
+        else "partial" if len(successful_answers) != len(answers)
+        else "complete"
+    )
 
     chat_store.append_turn(state["chat_id"], {
         "question": state["question"],
         "document_ids": document_ids,
         "documents_fetched": used_documents,
         "model_ids": model_ids,
-        "answers": [answer],
+        "answers": answers,
         "retrieved_sources": [
             {
                 "document_id": item["document_id"],
@@ -73,8 +91,8 @@ def persist_result(state: ChatState) -> dict:
             "question": state["question"],
             "document_ids": document_ids,
             "documents_fetched": used_documents,
-            "status": "complete",
-            "answers": [answer],
+            "status": status,
+            "answers": answers,
         }
     }
 

@@ -52,7 +52,9 @@ def append_turn(chat_id: str, turn: dict) -> None:
             "turn_count": len(chat["turns"]),
             "last_question": turn["question"][:300],
             "document_ids": turn["document_ids"],
-            "model_ids": turn["model_ids"],
+            "model_ids": list(dict.fromkeys(
+                [*chat["chat"].get("model_ids", []), *turn["model_ids"]]
+            )),
         })
         write_json(LOCAL_CHAT_FILE, {"chats": chats})
 

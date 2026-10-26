@@ -37,7 +37,12 @@ export default function LLMTab({ apiUrl, ocrApiUrl }) {
     const response = await llmFetch(apiUrl, 'models');
     const available = response.models || [];
     setModels(available);
-    setSelectedModels(available.slice(0, 1).map((model) => model.model_id));
+    setSelectedModels((current) => {
+      const stillAvailable = current.filter((id) => available.some((model) => model.model_id === id));
+      return stillAvailable.length
+        ? stillAvailable
+        : available.slice(0, 1).map((model) => model.model_id);
+    });
   }, [apiUrl]);
 
   useEffect(() => {
@@ -61,7 +66,11 @@ export default function LLMTab({ apiUrl, ocrApiUrl }) {
   };
 
   const toggleModel = (id) => {
-    setSelectedModels([id]);
+    setSelectedModels((current) => (
+      current.includes(id)
+        ? current.filter((modelId) => modelId !== id)
+        : current.length < 4 ? [...current, id] : current
+    ));
   };
 
   const indexSelectedDocuments = async () => {
@@ -99,7 +108,11 @@ export default function LLMTab({ apiUrl, ocrApiUrl }) {
         }),
       });
       setChatId(response.chat_id);
-      setError('Running the local Qwen model…');
+      setError(
+        selectedModels.length > 1
+          ? `Comparing ${selectedModels.length} models sequentially. This may take a few minutes…`
+          : `Running ${models.find((model) => model.model_id === selectedModels[0])?.display_name || selectedModels[0]}…`,
+      );
       const completed = await waitForJob(`chat-jobs/${encodeURIComponent(response.job_id)}`);
       const result = completed.result;
       setChatId(result.chat_id);
@@ -109,7 +122,11 @@ export default function LLMTab({ apiUrl, ocrApiUrl }) {
       }]);
       setQuestion('');
       setRefreshHistory((value) => value + 1);
-      setError(result.status === 'complete' ? '' : `The Qwen request did not complete (${result.status}).`);
+      setError(result.status === 'complete' ? '' : (
+        result.status === 'partial'
+          ? 'Some selected models failed. Successful and failed model results are shown below.'
+          : 'All selected models failed. Their error details are shown below.'
+      ));
     } catch (chatError) {
       setError(chatError.message);
       setRefreshHistory((value) => value + 1);
@@ -125,7 +142,7 @@ export default function LLMTab({ apiUrl, ocrApiUrl }) {
     const availableHistoryModels = (chat.model_ids || [])
       .filter((id) => models.some((model) => model.model_id === id));
     setSelectedModels(availableHistoryModels.length
-      ? availableHistoryModels.slice(0, 1)
+      ? availableHistoryModels
       : models.slice(0, 1).map((model) => model.model_id));
     setTurns(record.turns || []);
   };
@@ -172,20 +189,42 @@ export default function LLMTab({ apiUrl, ocrApiUrl }) {
           </button>
         </div>
         <div>
-          <h2>2. Local chat model</h2>
-          <p>This workspace uses the downloaded Qwen model on your computer.</p>
-          <div className="llm-choice-list">
+          <h2>2. Local models</h2>
+          <p>Select up to four local models. Multiple selections run sequentially with the same question and retrieved passages for a side-by-side comparison.</p>
+          <div className="llm-model-actions">
+            <span>{selectedModels.length} of {models.length} selected</span>
+            <button
+              type="button"
+              onClick={() => setSelectedModels(selectedModels.length === models.length
+                ? []
+                : models.slice(0, 4).map((model) => model.model_id))}
+              disabled={!models.length}
+            >
+              {selectedModels.length === models.length ? 'Clear selection' : 'Select all'}
+            </button>
+          </div>
+          <div className="llm-model-grid">
             {models.map((model) => (
-              <label key={model.model_id}>
+              <label className={`llm-model-option ${selectedModels.includes(model.model_id) ? 'selected' : ''}`} key={model.model_id}>
                 <input
-                  type="radio"
+                  type="checkbox"
                   checked={selectedModels.includes(model.model_id)}
                   onChange={() => toggleModel(model.model_id)}
+                  disabled={!selectedModels.includes(model.model_id) && selectedModels.length >= 4}
                 />
-                <span>{model.model_id}</span>
+                <span className="llm-model-option-copy">
+                  <strong>{model.display_name || model.model_id}</strong>
+                  <small>{model.file_name} · {Number(model.size_bytes / (1024 ** 3)).toFixed(1)} GB</small>
+                </span>
+                {selectedModels.includes(model.model_id) && <span className="llm-model-selected-tag">Selected</span>}
               </label>
             ))}
           </div>
+          {!models.length && (
+            <p className="llm-model-empty">
+              No GGUF models found. Set <code>LOCAL_MODEL_DIR</code> to the folder containing your model files, then restart the backend.
+            </p>
+          )}
         </div>
       </section>
 
@@ -205,39 +244,44 @@ export default function LLMTab({ apiUrl, ocrApiUrl }) {
             {turns.map((turn, turnIndex) => (
               <section className="llm-turn" key={`${turn.created_at || turnIndex}-${turnIndex}`}>
                 <p className="llm-question-bubble">{turn.question}</p>
-                {(turn.answers || []).map((answer) => (
-                  <article className="llm-answer-card" key={`${turnIndex}-${answer.model_id}`}>
-                    <h3>{answer.model_id}</h3>
-                    {answer.error
-                      ? <p className="llm-error" role="alert">{answer.error}</p>
-                      : <p className="llm-answer-text">{answer.text}</p>}
-                    {answer.usage
-                      && Number.isFinite(Number(answer.usage.input_tokens))
-                      && Number.isFinite(Number(answer.usage.output_tokens)) && (
-                      <small>
-                        Tokens: {answer.usage.input_tokens || 0} input / {answer.usage.output_tokens || 0} output
-                      </small>
-                    )}
-                    {answer.sources?.length > 0 && (
-                      <small>
-                        {answer.citations?.length
-                          ? 'Model-cited sources'
-                          : 'Retrieved sources (the model did not cite inline)'}
-                      </small>
-                    )}
-                    <div className="llm-citations">
-                      {(answer.citations?.length ? answer.citations : answer.sources || []).map((item) => (
-                        <button
-                          type="button"
-                          key={`${answer.model_id}-${item.source_id}`}
-                          onClick={() => setCitation(item)}
-                        >
-                          Open {item.source_id} · {item.filename} · p.{item.page}
-                        </button>
-                      ))}
-                    </div>
-                  </article>
-                ))}
+                <div className="llm-model-results">
+                  {(turn.answers || []).map((answer) => (
+                    <article className="llm-answer-card" key={`${turnIndex}-${answer.model_id}`}>
+                      <h3>{answer.display_name || answer.model_id}</h3>
+                      <small className="llm-model-id-tag">{answer.model_id}</small>
+                      {answer.error
+                        ? <p className="llm-error" role="alert">{answer.error}</p>
+                        : <p className="llm-answer-text">{answer.text}</p>}
+                      {answer.performance && (
+                        <div className="llm-performance">
+                          <span>Load {answer.performance.model_load_seconds}s</span>
+                          <span>Answer {answer.performance.inference_seconds}s</span>
+                          {answer.performance.output_tokens_per_second && (
+                            <span>{answer.performance.output_tokens_per_second} tokens/s</span>
+                          )}
+                        </div>
+                      )}
+                      {answer.usage
+                        && Number.isFinite(Number(answer.usage.input_tokens))
+                        && Number.isFinite(Number(answer.usage.output_tokens)) && (
+                        <small>
+                          Tokens: {answer.usage.input_tokens || 0} input / {answer.usage.output_tokens || 0} output
+                        </small>
+                      )}
+                      <div className="llm-citations">
+                        {(answer.citations?.length ? answer.citations : answer.sources || []).map((item) => (
+                          <button
+                            type="button"
+                            key={`${answer.model_id}-${item.source_id}`}
+                            onClick={() => setCitation(item)}
+                          >
+                            Open {item.source_id} · {item.filename} · p.{item.page}
+                          </button>
+                        ))}
+                      </div>
+                    </article>
+                  ))}
+                </div>
               </section>
             ))}
           </div>
@@ -252,7 +296,7 @@ export default function LLMTab({ apiUrl, ocrApiUrl }) {
               placeholder="Ask a question about the selected OCR documents…"
             />
             <button type="submit" disabled={busy || !question.trim() || !selectedDocuments.length || !selectedModels.length}>
-              {busy ? 'Sending…' : 'Ask Qwen'}
+              {busy ? 'Running models…' : selectedModels.length > 1 ? `Compare ${selectedModels.length} models` : 'Ask selected model'}
             </button>
           </form>
         </section>

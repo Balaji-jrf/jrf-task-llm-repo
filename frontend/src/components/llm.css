@@ -51,3 +51,32 @@
 .llm-citation-excerpt { color: #53645a; font-size: 12px; line-height: 1.55; }
 @media (max-width: 1050px) { .llm-work-area, .llm-work-area.has-compare { grid-template-columns: minmax(0, 1fr) 260px; } .llm-work-area.has-compare .llm-compare { grid-column: 1 / -1; } }
 @media (max-width: 700px) { .jrf-llm-workspace { padding: 14px; } .llm-setup, .llm-work-area, .llm-work-area.has-compare { grid-template-columns: 1fr; } .llm-history { position: static; max-height: 340px; } .llm-compare { grid-column: auto !important; height: 70vh; } .llm-chat { height: 70vh; min-height: 320px; } }
+
+.llm-model-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 14px 0 10px; color: #718077; font-size: 12px; }
+.llm-model-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 270px), 1fr)); gap: 10px; max-height: 280px; padding: 2px; overflow: auto; }
+.llm-model-option { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: start; gap: 10px; min-width: 0; padding: 12px; border: 1px solid #dce3da; border-radius: 10px; background: #fbfcfa; cursor: pointer; transition: border-color .15s ease, background .15s ease, box-shadow .15s ease; }
+.llm-model-option:hover { border-color: #9bb4a2; box-shadow: 0 3px 12px rgba(31, 77, 57, .08); }
+.llm-model-option.selected { border-color: #43846a; background: #f0f7f2; box-shadow: inset 0 0 0 1px #43846a; }
+.llm-model-option input { margin: 3px 0 0; accent-color: #225e49; }
+.llm-model-option-copy { display: grid; min-width: 0; gap: 5px; color: #244839; }
+.llm-model-option-copy strong { font-size: 13px; line-height: 1.35; overflow-wrap: anywhere; }
+.llm-model-option-copy small { color: #718077; font-size: 10px; line-height: 1.4; overflow-wrap: anywhere; }
+.llm-model-selected-tag { padding: 4px 7px; border-radius: 999px; color: #195b3e; background: #dcefe1; font-size: 10px; font-weight: 700; white-space: nowrap; }
+.llm-model-empty { padding: 12px; border: 1px dashed #cbd6ca; border-radius: 9px; }
+.llm-model-empty code { font-size: 12px; }
+.llm-performance { display: flex; flex-wrap: wrap; gap: 7px; margin: 10px 0; }
+.llm-performance span { padding: 5px 8px; border: 1px solid #e0e8df; border-radius: 999px; color: #53645a; background: #f4f7f3; font-size: 10px; font-variant-numeric: tabular-nums; }
+.llm-answer-card h3 { display: inline-flex; align-items: center; max-width: 100%; padding: 6px 9px; border-radius: 7px; color: #164c38; background: #e7f2e9; }
+.llm-workspace-header > button { flex: 0 0 auto; }
+.llm-model-id-tag { display: block; margin: -5px 0 8px; color: #718077; font-family: ui-monospace, monospace; font-size: 10px; overflow-wrap: anywhere; }
+.llm-history-model-tags { display: flex; flex-wrap: wrap; gap: 4px; }
+.llm-history-model-tags em { max-width: 100%; padding: 3px 6px; border-radius: 999px; color: #195b3e; background: #e7f2e9; font-size: 9px; font-style: normal; overflow-wrap: anywhere; }
+.llm-model-results { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr)); align-items: start; gap: 10px; }
+.llm-model-results > .llm-answer-card { min-width: 0; }
+@media (max-width: 700px) {
+  .llm-model-grid { max-height: 360px; grid-template-columns: 1fr; }
+  .llm-workspace-header { align-items: flex-start; }
+  .llm-workspace-header > button { padding: 8px 10px; }
+  .llm-model-option { grid-template-columns: auto minmax(0, 1fr); }
+  .llm-model-selected-tag { grid-column: 2; justify-self: start; }
+}
