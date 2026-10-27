@@ -174,3 +174,144 @@
   .chat-sidebar { display: none; }
   .history-grid { grid-template-columns: 1fr; }
 }
+
+/* ══════════════════════════════════════════════════════════════
+   MARKDOWN ANSWER RENDERING
+   Covers all patterns LLMs produce: headings, lists, bold,
+   italic, code, tables, blockquotes, horizontal rules.
+══════════════════════════════════════════════════════════════ */
+.answer-markdown { color: #1b3028; font: 14px/1.7 'Fraunces', serif; overflow-wrap: anywhere; }
+.answer-markdown > *:first-child { margin-top: 0; }
+.answer-markdown > *:last-child  { margin-bottom: 0; }
+
+/* Headings — bold + Fraunces */
+.answer-markdown h1,
+.answer-markdown h2,
+.answer-markdown h3,
+.answer-markdown h4,
+.answer-markdown h5,
+.answer-markdown h6 {
+  font-family: 'Fraunces', serif;
+  font-weight: 600;
+  color: #183a30;
+  margin: 1.1em 0 0.35em;
+  line-height: 1.3;
+}
+.answer-markdown h1 { font-size: 1.25em; border-bottom: 1px solid #d9e1d8; padding-bottom: 0.2em; }
+.answer-markdown h2 { font-size: 1.12em; border-bottom: 1px solid #e5e9e2; padding-bottom: 0.15em; }
+.answer-markdown h3 { font-size: 1.0em; }
+.answer-markdown h4,
+.answer-markdown h5,
+.answer-markdown h6 { font-size: 0.92em; color: #315641; }
+
+/* Bold & italic */
+.answer-markdown strong { font-weight: 700; color: #183a30; }
+.answer-markdown em     { font-style: italic; color: #315641; }
+
+/* Paragraphs */
+.answer-markdown p { margin: 0.55em 0; }
+
+/* Lists */
+.answer-markdown ul,
+.answer-markdown ol {
+  margin: 0.5em 0;
+  padding-left: 1.5em;
+}
+.answer-markdown ul { list-style-type: disc; }
+.answer-markdown ol { list-style-type: decimal; }
+.answer-markdown li { margin: 0.3em 0; line-height: 1.6; }
+.answer-markdown li > ul,
+.answer-markdown li > ol { margin: 0.2em 0; }
+
+/* Nested list bullets */
+.answer-markdown ul ul       { list-style-type: circle; }
+.answer-markdown ul ul ul    { list-style-type: square; }
+
+/* Inline code */
+.answer-markdown code {
+  font-family: 'DM Mono', monospace;
+  font-size: 0.82em;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: #f0f5ef;
+  color: #315641;
+  border: 1px solid #d9e1d8;
+}
+
+/* Code blocks */
+.answer-markdown pre {
+  margin: 0.8em 0;
+  padding: 12px 14px;
+  border-radius: 8px;
+  background: #1b2e23;
+  overflow-x: auto;
+}
+.answer-markdown pre code {
+  background: transparent;
+  border: none;
+  padding: 0;
+  color: #c8e6c9;
+  font-size: 0.8em;
+  line-height: 1.6;
+}
+
+/* Blockquote */
+.answer-markdown blockquote {
+  margin: 0.8em 0;
+  padding: 8px 14px;
+  border-left: 3px solid #d46a46;
+  background: #fff9f5;
+  color: #614535;
+  border-radius: 0 6px 6px 0;
+}
+.answer-markdown blockquote p { margin: 0; }
+
+/* Horizontal rule */
+.answer-markdown hr {
+  border: none;
+  border-top: 1px solid #d9e1d8;
+  margin: 1em 0;
+}
+
+/* Tables */
+.answer-markdown table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0.8em 0;
+  font-size: 0.88em;
+}
+.answer-markdown thead tr { background: #f0f5ef; }
+.answer-markdown th {
+  padding: 8px 12px;
+  border: 1px solid #d9e1d8;
+  text-align: left;
+  font-weight: 600;
+  color: #183a30;
+  font-family: 'DM Mono', monospace;
+  font-size: 0.82em;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.answer-markdown td {
+  padding: 7px 12px;
+  border: 1px solid #e5e9e2;
+  color: #26372f;
+  vertical-align: top;
+}
+.answer-markdown tbody tr:nth-child(even) { background: #f8faf6; }
+.answer-markdown tbody tr:hover { background: #f0f5ef; }
+
+/* Links */
+.answer-markdown a {
+  color: #d46a46;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.answer-markdown a:hover { color: #183a30; }
+
+/* Images (if any) */
+.answer-markdown img {
+  max-width: 100%;
+  border-radius: 6px;
+  margin: 0.5em 0;
+}

@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import ReactMarkdown from 'react-markdown';
 import { fetchOcrDocuments, llmApi, waitForJob } from '../llmApi';
 import CitationPanel from './CitationPanel';
 
@@ -293,7 +294,9 @@ export default function ChatTab({ restoredChat, onRestoreConsumed }) {
 
                       {answer.error
                         ? <p className="answer-error">{answer.error}</p>
-                        : <p className="answer-text">{answer.text}</p>
+                        : <div className="answer-text answer-markdown">
+                            <ReactMarkdown>{answer.text}</ReactMarkdown>
+                          </div>
                       }
 
                       {answer.performance && (
