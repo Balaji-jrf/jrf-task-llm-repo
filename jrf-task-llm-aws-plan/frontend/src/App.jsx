@@ -32,6 +32,8 @@ export default function App() {
           className="back-link"
           href={import.meta.env.VITE_NLP_PIPELINE_URL || '#'}
           title="Back to NLP Pipeline"
+          target="_top"
+          rel="noreferrer"
         >
           ← NLP Pipeline
         </a>
