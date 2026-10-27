@@ -4,11 +4,9 @@ import 'react-pdf/dist/Page/AnnotationLayer.css';
 import 'react-pdf/dist/Page/TextLayer.css';
 import { fetchOcrDocument } from '../llmApi';
 
-// Use react-pdf's own bundled worker — guarantees version match
-pdfjs.GlobalWorkerOptions.workerSrc = new URL(
-  'pdfjs-dist/build/pdf.worker.min.mjs',
-  import.meta.url,
-).toString();
+// Use CDN-hosted worker — avoids .mjs MIME type issues on Amplify/CloudFront
+pdfjs.GlobalWorkerOptions.workerSrc =
+  `https://unpkg.com/pdfjs-dist@4.8.69/build/pdf.worker.min.mjs`;
 
 export default function CitationPanel({ citation, onClose }) {
   const [docUrl, setDocUrl] = useState('');
