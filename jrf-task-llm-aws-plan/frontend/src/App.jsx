@@ -30,7 +30,7 @@ export default function App() {
         </nav>
         <a
           className="back-link"
-          href={process.env.REACT_APP_NLP_PIPELINE_URL || '#'}
+          href={import.meta.env.VITE_NLP_PIPELINE_URL || '#'}
           title="Back to NLP Pipeline"
         >
           ← NLP Pipeline

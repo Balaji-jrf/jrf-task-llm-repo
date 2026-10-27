@@ -1,5 +1,5 @@
-const LLM_API = (process.env.REACT_APP_LLM_API_URL || '').replace(/\/$/, '');
-const OCR_API = (process.env.REACT_APP_OCR_API_URL || '').replace(/\/$/, '');
+const LLM_API = (import.meta.env.VITE_LLM_API_URL || '').replace(/\/$/, '');
+const OCR_API = (import.meta.env.VITE_OCR_API_URL || '').replace(/\/$/, '');
 
 async function _fetch(url, options = {}) {
   const body = options.body;
