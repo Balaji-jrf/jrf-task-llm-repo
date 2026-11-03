@@ -13,7 +13,7 @@ export default function App() {
   };
 
   return (
-    <main className="app-shell">
+    <main className={`app-shell ${tab === 'chat' ? 'app-shell-chat' : ''}`}>
       <header className="topbar">
         <div className="brand-mark">B</div>
         <div>

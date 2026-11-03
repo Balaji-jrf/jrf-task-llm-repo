@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { fetchOcrDocuments, llmApi, waitForJob } from '../llmApi';
+import { getDocumentTagOptions, UNTAGGED_FILTER } from '../documentTags';
 import CitationPanel from './CitationPanel';
 
 const MODES = [
@@ -8,26 +9,68 @@ const MODES = [
   { id: 'summarize_doc',      label: 'Full Doc Summary' },
   { id: 'summarize_chapter',  label: 'Chapter-wise' },
   { id: 'summarize_page',     label: 'Page Range' },
-  { id: 'summarize_chunk',    label: 'Chunk Range' },
 ];
 
 const MODE_LABELS = {
   chat: 'Q&A',
   summarize_doc: 'Doc Summary',
-  summarize_chunk: 'Chunk Summary',
   summarize_page: 'Page Summary',
   summarize_chapter: 'Chapter Summary',
 };
 
+function addInlineCitationLinks(answer) {
+  const citations = answer.citations || [];
+  const bySourceId = new Map(citations.map((citation) => [citation.source_id, citation]));
+  return String(answer.text || '').replace(/\[(src\d+(?:\s*,\s*src\d+)*)\]/gi, (marker, sourceIds) => {
+    const links = sourceIds.split(',').map((sourceId) => sourceId.trim()).map((sourceId) => {
+      const citation = bySourceId.get(sourceId);
+      if (!citation) return sourceId;
+      const page = citation.page ?? citation.page_start ?? 1;
+      return `[p.${page} · ${sourceId}](https://citation.local/${sourceId})`;
+    });
+    return links.join(' ');
+  });
+}
+
+function AnswerMarkdown({ answer, onCitation }) {
+  return (
+    <ReactMarkdown components={{
+      a: ({ href, children, ...props }) => {
+        const match = href?.match(/^https:\/\/citation\.local\/(src\d+)$/);
+        if (match) {
+          const source = answer.citations?.find((item) => item.source_id === match[1]);
+          return source ? (
+            <button
+              type="button"
+              className="inline-citation"
+              title={`${source.filename}, page ${source.page}`}
+              onClick={() => onCitation(source)}
+            >
+              {children}
+            </button>
+          ) : null;
+        }
+        return <a href={href} target="_blank" rel="noreferrer" {...props}>{children}</a>;
+      },
+    }}>
+      {addInlineCitationLinks(answer)}
+    </ReactMarkdown>
+  );
+}
+
 export default function ChatTab({ restoredChat, onRestoreConsumed }) {
   const [documents, setDocuments] = useState([]);
+  const [documentIndexStatus, setDocumentIndexStatus] = useState({});
+  const [tagFilter, setTagFilter] = useState('all');
+  const [documentSearch, setDocumentSearch] = useState('');
   const [models, setModels] = useState([]);
   const [selectedDocs, setSelectedDocs] = useState([]);
   const [selectedModels, setSelectedModels] = useState([]);
+  const [compareMode, setCompareMode] = useState(false);
+  const [compareModel, setCompareModel] = useState('');
   const [mode, setMode] = useState('chat');
   const [question, setQuestion] = useState('');
   const [pageRange, setPageRange] = useState('');
-  const [chunkRange, setChunkRange] = useState('');
   const [chapterHint, setChapterHint] = useState('');
   const [chatId, setChatId] = useState('');
   const [turns, setTurns] = useState([]);
@@ -37,6 +80,41 @@ export default function ChatTab({ restoredChat, onRestoreConsumed }) {
   const [busy, setBusy] = useState(false);
   const [indexing, setIndexing] = useState(false);
   const messagesRef = useRef(null);
+  const layoutRef = useRef(null);
+  const resizingRef = useRef(null);
+  const [sidebarWidth, setSidebarWidth] = useState(300);
+  const [citationWidth, setCitationWidth] = useState(360);
+
+  const startResize = (pane, event) => {
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    resizingRef.current = { pane, startX: event.clientX, startWidth: pane === 'sidebar' ? sidebarWidth : citationWidth };
+  };
+  const resizePane = (event) => {
+    const resizing = resizingRef.current;
+    if (!resizing) return;
+    const availableWidth = layoutRef.current?.clientWidth || window.innerWidth;
+    const maxWidth = Math.max(220, Math.min(520, availableWidth - 760));
+    const delta = event.clientX - resizing.startX;
+    if (resizing.pane === 'sidebar') {
+      setSidebarWidth(Math.max(200, Math.min(maxWidth, resizing.startWidth + delta)));
+    } else {
+      setCitationWidth(Math.max(260, Math.min(maxWidth, resizing.startWidth - delta)));
+    }
+  };
+  const stopResize = () => { resizingRef.current = null; };
+  const resizeWithKeyboard = (pane, event) => {
+    if (!['ArrowLeft', 'ArrowRight'].includes(event.key)) return;
+    event.preventDefault();
+    const delta = event.key === 'ArrowRight' ? 20 : -20;
+    const availableWidth = layoutRef.current?.clientWidth || window.innerWidth;
+    const maxWidth = Math.max(220, Math.min(520, availableWidth - 760));
+    if (pane === 'sidebar') {
+      setSidebarWidth((width) => Math.max(200, Math.min(maxWidth, width + delta)));
+    } else {
+      setCitationWidth((width) => Math.max(260, Math.min(maxWidth, width - delta)));
+    }
+  };
 
   // Auto-scroll on new turns
   useEffect(() => {
@@ -51,9 +129,35 @@ export default function ChatTab({ restoredChat, onRestoreConsumed }) {
         if (cancelled) return;
         const completed = docs.filter((d) => d.status === 'completed');
         setDocuments(completed);
+        setDocumentIndexStatus(Object.fromEntries(
+          completed.map((doc) => [doc.document_id, 'checking']),
+        ));
+        const queue = [...completed];
+        const workers = Array.from({ length: Math.min(4, queue.length) }, async () => {
+          while (queue.length) {
+            const doc = queue.shift();
+            try {
+              const status = await llmApi.documentChunks(doc.document_id, { statusOnly: true });
+              if (!cancelled) {
+                setDocumentIndexStatus((current) => ({
+                  ...current,
+                  [doc.document_id]: status.index_status || (status.total > 0 ? 'DONE' : 'NOT_INDEXED'),
+                }));
+              }
+            } catch {
+              if (!cancelled) {
+                setDocumentIndexStatus((current) => ({ ...current, [doc.document_id]: 'UNAVAILABLE' }));
+              }
+            }
+          }
+        });
+        Promise.all(workers).catch((err) => {
+          if (!cancelled) setError(`Unable to check document index status: ${err.message}`);
+        });
         const available = modelsData.models || [];
         setModels(available);
         setSelectedModels(available.slice(0, 1).map((m) => m.model_id));
+        setCompareModel(available[1]?.model_id || '');
       })
       .catch((err) => { if (!cancelled) setError(err.message); });
     return () => { cancelled = true; };
@@ -61,27 +165,27 @@ export default function ChatTab({ restoredChat, onRestoreConsumed }) {
 
   // Restore from history
   useEffect(() => {
-    if (!restoredChat) return;
+    if (!restoredChat || !models.length) return;
     const { chat, turns: historyTurns } = restoredChat;
     setChatId(chat.chat_id || '');
     setSelectedDocs(chat.document_ids || []);
-    setSelectedModels(
-      (chat.model_ids || []).filter((id) => models.some((m) => m.model_id === id))
-      || models.slice(0, 1).map((m) => m.model_id)
-    );
+    const validModels = (chat.model_ids || []).filter((id) => models.some((m) => m.model_id === id));
+    setSelectedModels(validModels.slice(0, 1).length ? validModels.slice(0, 1) : models.slice(0, 1).map((m) => m.model_id));
+    setCompareModel(validModels[1] || models.find((model) => model.model_id !== validModels[0])?.model_id || '');
+    setCompareMode(validModels.length > 1);
     setTurns(historyTurns || []);
     onRestoreConsumed();
-  }, [restoredChat]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [restoredChat, models, onRestoreConsumed]);
 
   const toggleDoc = (id) =>
     setSelectedDocs((prev) =>
-      prev.includes(id) ? prev.filter((d) => d !== id) : prev.length < 3 ? [...prev, id] : prev
+      prev.includes(id) ? prev.filter((d) => d !== id) : prev.length < 5 ? [...prev, id] : prev
     );
 
-  const toggleModel = (id) =>
-    setSelectedModels((prev) =>
-      prev.includes(id) ? prev.filter((m) => m !== id) : prev.length < 4 ? [...prev, id] : prev
-    );
+  const selectModel = (id) => {
+    if (id === compareModel) setCompareModel(selectedModels[0] || '');
+    setSelectedModels([id]);
+  };
 
   const handleIndex = async () => {
     if (!selectedDocs.length) return;
@@ -93,8 +197,16 @@ export default function ChatTab({ restoredChat, onRestoreConsumed }) {
       setStatus(`Indexing job started (${resp.job_id.slice(0, 8)}…). Waiting…`);
       const done = await waitForJob(() => llmApi.pollIndexJob(resp.job_id));
       const indexed = done.indexed_documents || [];
-      const total = indexed.reduce((s, d) => s + (d.chunks_indexed || 0), 0);
-      setStatus(`✓ Indexed ${indexed.length} document(s) → ${total} chunks (10 pages each).`);
+      const total = indexed.reduce((sum, doc) => sum + (doc.chunks_indexed || 0), 0);
+      const reused = indexed.reduce((sum, doc) => sum + (doc.chunks_reused || 0), 0);
+      setDocumentIndexStatus((current) => ({
+        ...current,
+        ...Object.fromEntries(indexed.map((doc) => [doc.document_id, 'DONE'])),
+      }));
+      setStatus(`Prepared ${indexed.length} document(s): ${total} new chunks, ${reused} reused.`);
+      if (done.errors?.length) {
+        setError(done.errors.map((item) => `${item.document_id}: ${item.error}`).join('; '));
+      }
     } catch (err) {
       setError(err.message);
       setStatus('');
@@ -107,21 +219,21 @@ export default function ChatTab({ restoredChat, onRestoreConsumed }) {
     const base = {
       chat_id: chatId || undefined,
       document_ids: selectedDocs,
-      model_ids: selectedModels,
+      model_ids: compareMode ? [...selectedModels, compareModel] : selectedModels,
+      compare_mode: compareMode,
       mode,
     };
     if (mode === 'chat') return { ...base, question: question.trim() };
     if (mode === 'summarize_page') return { ...base, page_range: pageRange };
-    if (mode === 'summarize_chunk') return { ...base, chunk_range: chunkRange };
     if (mode === 'summarize_chapter') return { ...base, chapter_hint: chapterHint };
     return base; // summarize_doc needs nothing extra
   };
 
   const canSend = () => {
-    if (busy || !selectedDocs.length || !selectedModels.length) return false;
+    if (busy || indexing || !selectedDocs.length || !selectedModels.length) return false;
+    if (compareMode && (!compareModel || compareModel === selectedModels[0])) return false;
     if (mode === 'chat') return question.trim().length > 0;
     if (mode === 'summarize_page') return pageRange.trim().length > 0;
-    if (mode === 'summarize_chunk') return chunkRange.trim().length > 0;
     return true;
   };
 
@@ -131,16 +243,38 @@ export default function ChatTab({ restoredChat, onRestoreConsumed }) {
     setBusy(true);
     setError('');
     const modelName = models.find((m) => m.model_id === selectedModels[0])?.display_name || selectedModels[0];
-    setStatus(
-      selectedModels.length > 1
-        ? `Running ${selectedModels.length} models…`
-        : `Running ${modelName}…`
-    );
+    setStatus(compareMode ? `Comparing ${modelName} and ${models.find((model) => model.model_id === compareModel)?.display_name || compareModel}…` : `Running ${modelName}…`);
     try {
+      const indexStates = await Promise.all(
+        selectedDocs.map(async (documentId) => ({
+          documentId,
+          data: await llmApi.documentChunks(documentId, { statusOnly: true }),
+        })),
+      );
+      const missing = indexStates.filter(({ data }) => data.index_status !== 'DONE').map(({ documentId }) => documentId);
+      if (missing.length) {
+        setStatus(`Preparing ${missing.length} document(s) before chat…`);
+        const indexJob = await llmApi.indexDocuments(missing);
+        const indexed = await waitForJob(() => llmApi.pollIndexJob(indexJob.job_id));
+        if (indexed.status !== 'completed') {
+          throw new Error(indexed.errors?.map((item) => item.error).filter(Boolean).join('; ') || 'Could not prepare every selected document.');
+        }
+        const refreshed = await Promise.all(
+          missing.map((documentId) => llmApi.documentChunks(documentId, { statusOnly: true })),
+        );
+        if (refreshed.some((data) => data.index_status !== 'DONE')) {
+          throw new Error('No searchable OCR text or tables were found in one or more selected documents.');
+        }
+        setDocumentIndexStatus((current) => ({
+          ...current,
+          ...Object.fromEntries(missing.map((documentId) => [documentId, 'DONE'])),
+        }));
+      }
+      setStatus(compareMode ? 'Running both models on the same retrieved sources…' : `Running ${modelName}…`);
       const resp = await llmApi.chat(buildPayload());
-      setChatId(resp.chat_id || chatId);
       const done = await waitForJob(() => llmApi.pollChatJob(resp.job_id));
       const result = done.result || {};
+      setChatId(result.chat_id || resp.chat_id || chatId);
       setTurns((prev) => [...prev, {
         question: result.question || question,
         answers: result.answers || [],
@@ -149,7 +283,7 @@ export default function ChatTab({ restoredChat, onRestoreConsumed }) {
       setQuestion('');
       setStatus(
         result.status === 'complete' ? '' :
-        result.status === 'partial' ? 'Some models failed — partial results shown.' :
+        result.status === 'partial' ? 'Some document summaries or models failed — partial results shown.' :
         'All models failed — see error details below.'
       );
     } catch (err) {
@@ -170,26 +304,59 @@ export default function ChatTab({ restoredChat, onRestoreConsumed }) {
 
   const selectedDocNames = documents
     .filter((d) => selectedDocs.includes(d.document_id))
-    .map((d) => d.filename);
+    .map((d) => d.doc_name || d.filename);
+  const tagOptions = getDocumentTagOptions(documents);
+  const visibleDocuments = documents.filter((doc) => {
+    const savedTag = doc.doc_tag?.trim() || '';
+    const matchesTag = tagFilter === 'all'
+      || (tagFilter === UNTAGGED_FILTER ? !savedTag : savedTag === tagFilter);
+    const searchText = `${doc.doc_name || doc.filename || ''} ${doc.document_id}`.toLowerCase();
+    return matchesTag && searchText.includes(documentSearch.toLowerCase());
+  });
 
   return (
     <div className="chat-page">
       {status && <p className="status-bar">{status}</p>}
       {error && <p className="error-bar">{error}</p>}
 
-      <div className="chat-layout">
+      <div
+        className="chat-layout"
+        ref={layoutRef}
+        style={{ '--chat-sidebar-width': `${sidebarWidth}px`, '--chat-citation-width': `${citationWidth}px` }}
+      >
         {/* ── Left sidebar ── */}
         <aside className="chat-sidebar">
           {/* Documents */}
           <div className="sidebar-card">
             <div className="sidebar-card-head">
               <h3>Documents</h3>
-              <span>{selectedDocs.length}/3 selected</span>
+              <span>{selectedDocs.length}/5 selected</span>
             </div>
             <div className="sidebar-card-body">
+              <div className="doc-filters">
+                <select
+                  aria-label="Filter documents by tag"
+                  value={tagFilter}
+                  onChange={(event) => setTagFilter(event.target.value)}
+                >
+                  {tagOptions.map((option) => (
+                    <option key={option.value} value={option.value}>{option.label}</option>
+                  ))}
+                </select>
+                <input
+                  type="search"
+                  aria-label="Search documents"
+                  placeholder="Search documents…"
+                  value={documentSearch}
+                  onChange={(event) => setDocumentSearch(event.target.value)}
+                />
+              </div>
               {documents.length === 0 && <p className="doc-empty">No completed OCR documents found.</p>}
+              {documents.length > 0 && visibleDocuments.length === 0 && (
+                <p className="doc-empty">No documents match this tag or search.</p>
+              )}
               <div className="doc-list">
-                {documents.map((doc) => (
+                {visibleDocuments.map((doc) => (
                   <label
                     key={doc.document_id}
                     className={`doc-item ${selectedDocs.includes(doc.document_id) ? 'selected' : ''}`}
@@ -198,11 +365,22 @@ export default function ChatTab({ restoredChat, onRestoreConsumed }) {
                       type="checkbox"
                       checked={selectedDocs.includes(doc.document_id)}
                       onChange={() => toggleDoc(doc.document_id)}
-                      disabled={!selectedDocs.includes(doc.document_id) && selectedDocs.length >= 3}
+                      disabled={!selectedDocs.includes(doc.document_id) && selectedDocs.length >= 5}
                     />
                     <div>
-                      <div className="doc-item-name">{doc.filename}</div>
-                      <div className="doc-item-meta">{doc.page_count || '?'} pages</div>
+                      <div className="doc-item-name">{doc.doc_name || doc.filename}</div>
+                      <div className="doc-item-meta">
+                        {doc.total_pages || '?'} pages{doc.doc_tag ? ` · ${doc.doc_tag}` : ''}
+                      </div>
+                      <span className={`doc-index-status doc-index-status-${(documentIndexStatus[doc.document_id] || 'checking').toLowerCase()}`}>
+                        {documentIndexStatus[doc.document_id] === 'DONE'
+                          ? 'Chunked · DONE'
+                          : documentIndexStatus[doc.document_id] === 'NOT_INDEXED'
+                            ? 'Not chunked'
+                            : documentIndexStatus[doc.document_id] === 'UNAVAILABLE'
+                              ? 'Index status unavailable'
+                              : 'Checking index…'}
+                      </span>
                     </div>
                   </label>
                 ))}
@@ -215,8 +393,9 @@ export default function ChatTab({ restoredChat, onRestoreConsumed }) {
                 onClick={handleIndex}
                 disabled={indexing || !selectedDocs.length}
               >
-                {indexing ? <><span className="spinner" />Indexing…</> : 'Index selected docs'}
+                {indexing ? <><span className="spinner" />Preparing…</> : 'Index / refresh selected docs'}
               </button>
+              <p className="index-help">Prepared chunks are saved in DynamoDB and reused for chat until OCR changes.</p>
             </div>
           </div>
 
@@ -224,7 +403,7 @@ export default function ChatTab({ restoredChat, onRestoreConsumed }) {
           <div className="sidebar-card">
             <div className="sidebar-card-head">
               <h3>Models</h3>
-              <span>{selectedModels.length}/4</span>
+              <span>{selectedModels.length ? '1 selected' : 'Choose one'}</span>
             </div>
             <div className="sidebar-card-body">
               <div className="model-list">
@@ -234,10 +413,10 @@ export default function ChatTab({ restoredChat, onRestoreConsumed }) {
                     className={`model-item ${selectedModels.includes(model.model_id) ? 'selected' : ''}`}
                   >
                     <input
-                      type="checkbox"
+                      type="radio"
+                      name="chat-model"
                       checked={selectedModels.includes(model.model_id)}
-                      onChange={() => toggleModel(model.model_id)}
-                      disabled={!selectedModels.includes(model.model_id) && selectedModels.length >= 4}
+                      onChange={() => selectModel(model.model_id)}
                     />
                     <div>
                       <div className="model-item-name">{model.display_name}</div>
@@ -250,6 +429,23 @@ export default function ChatTab({ restoredChat, onRestoreConsumed }) {
                 ))}
               </div>
             </div>
+            <div className="compare-model-control">
+              <label className="compare-mode-toggle">
+                <input type="checkbox" checked={compareMode} onChange={(event) => setCompareMode(event.target.checked)} />
+                Compare two models
+              </label>
+              {compareMode && (
+                <label className="compare-model-select">
+                  Second model
+                  <select value={compareModel} onChange={(event) => setCompareModel(event.target.value)}>
+                    <option value="">Choose a different model</option>
+                    {models.filter((model) => model.model_id !== selectedModels[0]).map((model) => (
+                      <option key={model.model_id} value={model.model_id}>{model.display_name}</option>
+                    ))}
+                  </select>
+                </label>
+              )}
+            </div>
           </div>
 
           {/* New chat */}
@@ -259,6 +455,20 @@ export default function ChatTab({ restoredChat, onRestoreConsumed }) {
         </aside>
 
         {/* ── Centre: chat area ── */}
+        <div
+          className="chat-resize-handle chat-resize-sidebar"
+          role="separator"
+          aria-label="Resize document and chat panels"
+          aria-orientation="vertical"
+          aria-valuenow={sidebarWidth}
+          tabIndex={0}
+          onPointerDown={(event) => startResize('sidebar', event)}
+          onPointerMove={resizePane}
+          onPointerUp={stopResize}
+          onPointerCancel={stopResize}
+          onLostPointerCapture={stopResize}
+          onKeyDown={(event) => resizeWithKeyboard('sidebar', event)}
+        />
         <div className="chat-main">
           {/* Context bar */}
           <div className="chat-context-bar">
@@ -284,7 +494,7 @@ export default function ChatTab({ restoredChat, onRestoreConsumed }) {
                 {turn.mode && turn.mode !== 'chat' && (
                   <div className="msg-mode-tag">{MODE_LABELS[turn.mode] || turn.mode}</div>
                 )}
-                <div className="msg-answers">
+                <div className={`msg-answers ${turn.answers?.length === 2 ? 'msg-answers-compare' : ''}`}>
                   {(turn.answers || []).map((answer) => (
                     <div className="answer-card" key={answer.model_id}>
                       <div className="answer-card-model">
@@ -292,12 +502,34 @@ export default function ChatTab({ restoredChat, onRestoreConsumed }) {
                       </div>
                       <span className="answer-card-model-id">{answer.model_id}</span>
 
-                      {answer.error
-                        ? <p className="answer-error">{answer.error}</p>
-                        : <div className="answer-text answer-markdown">
-                            <ReactMarkdown>{answer.text}</ReactMarkdown>
-                          </div>
-                      }
+                      {answer.error && <p className="answer-error">{answer.error}</p>}
+                      {answer.document_summaries?.length ? (
+                        <div className="answer-document-list">
+                          {answer.document_summaries.map((document) => (
+                            <section className="answer-document" key={document.document_id}>
+                              <h4 className="answer-document-title">
+                                <span>
+                                  {turn.mode === 'chat' ? 'Answer for' :
+                                    turn.mode === 'summarize_page' ? 'Page-range summary' :
+                                      turn.mode === 'summarize_chapter' ? 'Chapter-wise summary' :
+                                        'Document summary'}
+                                </span>
+                                {document.filename}
+                              </h4>
+                              {document.error
+                                ? <p className="answer-error">{document.error}</p>
+                                : <div className="answer-text answer-markdown">
+                                  <AnswerMarkdown answer={document} onCitation={setCitation} />
+                                </div>
+                              }
+                            </section>
+                          ))}
+                        </div>
+                      ) : !answer.error && (
+                        <div className="answer-text answer-markdown">
+                          <AnswerMarkdown answer={answer} onCitation={setCitation} />
+                        </div>
+                      )}
 
                       {answer.performance && (
                         <div className="answer-perf">
@@ -314,20 +546,6 @@ export default function ChatTab({ restoredChat, onRestoreConsumed }) {
                       )}
 
                       {/* Citations */}
-                      {(answer.citations?.length > 0) && (
-                        <div className="citations-row">
-                          {answer.citations.map((c) => (
-                            <button
-                              key={c.source_id}
-                              className="citation-btn"
-                              onClick={() => setCitation(c)}
-                            >
-                              <span className="citation-btn-icon">📌</span>
-                              {c.source_id} · p.{c.page_start || c.page}–{c.page_end || c.page}
-                            </button>
-                          ))}
-                        </div>
-                      )}
                     </div>
                   ))}
                 </div>
@@ -361,18 +579,6 @@ export default function ChatTab({ restoredChat, onRestoreConsumed }) {
                     value={pageRange}
                     onChange={(e) => setPageRange(e.target.value)}
                     placeholder="1-20"
-                  />
-                </label>
-              </div>
-            )}
-            {mode === 'summarize_chunk' && (
-              <div className="sum-options">
-                <label>
-                  Chunk range (e.g. 1-3)
-                  <input
-                    value={chunkRange}
-                    onChange={(e) => setChunkRange(e.target.value)}
-                    placeholder="1-3"
                   />
                 </label>
               </div>
@@ -420,7 +626,7 @@ export default function ChatTab({ restoredChat, onRestoreConsumed }) {
                   {busy
                     ? <><span className="spinner" />Running…</>
                     : mode === 'chat'
-                      ? selectedModels.length > 1 ? `Compare ${selectedModels.length}` : 'Send'
+                      ? compareMode ? 'Compare models' : 'Send'
                       : 'Run'
                   }
                 </button>
@@ -430,6 +636,20 @@ export default function ChatTab({ restoredChat, onRestoreConsumed }) {
         </div>
 
         {/* ── Right: citation panel ── */}
+        <div
+          className="chat-resize-handle chat-resize-citation"
+          role="separator"
+          aria-label="Resize chat and source viewer panels"
+          aria-orientation="vertical"
+          aria-valuenow={citationWidth}
+          tabIndex={0}
+          onPointerDown={(event) => startResize('citation', event)}
+          onPointerMove={resizePane}
+          onPointerUp={stopResize}
+          onPointerCancel={stopResize}
+          onLostPointerCapture={stopResize}
+          onKeyDown={(event) => resizeWithKeyboard('citation', event)}
+        />
         <CitationPanel citation={citation} onClose={() => setCitation(null)} />
       </div>
     </div>

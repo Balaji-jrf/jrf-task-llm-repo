@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Document, Page, pdfjs } from 'react-pdf';
 import 'react-pdf/dist/Page/AnnotationLayer.css';
 import 'react-pdf/dist/Page/TextLayer.css';
@@ -8,23 +8,36 @@ import { fetchOcrDocument } from '../llmApi';
 pdfjs.GlobalWorkerOptions.workerSrc =
   `https://unpkg.com/pdfjs-dist@4.8.69/build/pdf.worker.min.mjs`;
 
+const PDF_OPTIONS = Object.freeze({
+  disableAutoFetch: true,
+  disableStream: true,
+  rangeChunkSize: 64 * 1024,
+});
+
 export default function CitationPanel({ citation, onClose }) {
   const [docUrl, setDocUrl] = useState('');
+  const [sourceFilename, setSourceFilename] = useState(citation?.filename || '');
   const [pageCount, setPageCount] = useState(0);
   const [page, setPage] = useState(1);
+  const [pageWidth, setPageWidth] = useState(280);
   const [error, setError] = useState('');
-  const isPdf = /\.pdf$/i.test(citation?.filename || '');
+  const sourceWrapRef = useRef(null);
+  const isPdf = /\.pdf$/i.test(sourceFilename || citation?.filename || '');
 
   useEffect(() => {
     if (!citation) return;
     let cancelled = false;
     setDocUrl('');
+    setSourceFilename(citation.filename || '');
     setError('');
     setPage(Number(citation.page_start || citation.page) || 1);
     fetchOcrDocument(citation.document_id)
       .then((doc) => {
         if (!doc.s3_presigned_url) throw new Error('No preview URL returned.');
-        if (!cancelled) setDocUrl(doc.s3_presigned_url);
+        if (!cancelled) {
+          setDocUrl(doc.s3_presigned_url);
+          setSourceFilename(doc.filename || citation.filename || '');
+        }
       })
       .catch((err) => { if (!cancelled) setError(err.message); });
     return () => { cancelled = true; };
@@ -33,6 +46,16 @@ export default function CitationPanel({ citation, onClose }) {
   useEffect(() => {
     if (citation) setPage(Number(citation.page_start || citation.page) || 1);
   }, [citation]);
+
+  useEffect(() => {
+    const node = sourceWrapRef.current;
+    if (!node || typeof ResizeObserver === 'undefined') return undefined;
+    const observer = new ResizeObserver(([entry]) => {
+      setPageWidth(Math.max(220, Math.floor(entry.contentRect.width - 28)));
+    });
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [citation?.document_id]);
 
   if (!citation) {
     return (
@@ -59,9 +82,10 @@ export default function CitationPanel({ citation, onClose }) {
       </div>
 
       <div className="citation-panel-meta">
-        <strong>{citation.filename}</strong>
+        <strong>{sourceFilename || citation.filename}</strong>
         <span>
-          Pages {citation.page_start || citation.page}–{citation.page_end || citation.page}
+          Page {citation.page || citation.page_start}
+          {' · '}{citation.content_type || 'text'}
           {' · '}{citation.source_id}
         </span>
       </div>
@@ -78,7 +102,7 @@ export default function CitationPanel({ citation, onClose }) {
             </div>
           )}
 
-          <div className="citation-panel-body">
+          <div className="citation-panel-body" ref={sourceWrapRef}>
             {isPdf ? (
               <div className="citation-doc-wrap">
                 <Document
@@ -88,12 +112,14 @@ export default function CitationPanel({ citation, onClose }) {
                     setPage(Math.min(citationPage, numPages));
                   }}
                   onLoadError={(e) => setError(`PDF error: ${e.message}`)}
+                  options={PDF_OPTIONS}
                   loading={<p style={{ padding: 16, font: '11px DM Mono, monospace' }}>Loading document…</p>}
                 >
                   <div className="citation-pdf-wrap">
                     <Page
                       pageNumber={page}
-                      width={280}
+                      width={pageWidth}
+                      devicePixelRatio={Math.min(window.devicePixelRatio || 1, 1.5)}
                       renderTextLayer={false}
                       renderAnnotationLayer={false}
                     />
@@ -114,7 +140,7 @@ export default function CitationPanel({ citation, onClose }) {
               </div>
             ) : (
               <div className="citation-doc-wrap" style={{ position: 'relative' }}>
-                <img src={docUrl} alt={citation.filename} style={{ display: 'block', maxWidth: '100%' }} />
+                <img src={docUrl} alt={sourceFilename || citation.filename} style={{ display: 'block', maxWidth: '100%' }} />
                 {hasBbox && (
                   <div
                     className="bbox-highlight"
@@ -133,7 +159,7 @@ export default function CitationPanel({ citation, onClose }) {
               <p style={{ margin: 0, color: '#708078', font: '8px DM Mono, monospace', textTransform: 'uppercase', marginBottom: 6 }}>
                 Extracted text
               </p>
-              {citation.text}
+              <blockquote>{citation.text}</blockquote>
             </div>
           </div>
         </>

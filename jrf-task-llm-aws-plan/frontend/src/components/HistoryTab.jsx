@@ -4,7 +4,6 @@ import { llmApi } from '../llmApi';
 const MODE_LABELS = {
   chat: 'Q&A',
   summarize_doc: 'Doc Summary',
-  summarize_chunk: 'Chunk Summary',
   summarize_page: 'Page Summary',
   summarize_chapter: 'Chapter Summary',
 };
