@@ -71,7 +71,6 @@ export default function ChatTab({ restoredChat, onRestoreConsumed }) {
   const [mode, setMode] = useState('chat');
   const [question, setQuestion] = useState('');
   const [pageRange, setPageRange] = useState('');
-  const [chapterHint, setChapterHint] = useState('');
   const [chatId, setChatId] = useState('');
   const [turns, setTurns] = useState([]);
   const [citation, setCitation] = useState(null);
@@ -225,8 +224,7 @@ export default function ChatTab({ restoredChat, onRestoreConsumed }) {
     };
     if (mode === 'chat') return { ...base, question: question.trim() };
     if (mode === 'summarize_page') return { ...base, page_range: pageRange };
-    if (mode === 'summarize_chapter') return { ...base, chapter_hint: chapterHint };
-    return base; // summarize_doc needs nothing extra
+    return base;
   };
 
   const canSend = () => {
@@ -583,19 +581,6 @@ export default function ChatTab({ restoredChat, onRestoreConsumed }) {
                 </label>
               </div>
             )}
-            {mode === 'summarize_chapter' && (
-              <div className="sum-options">
-                <label>
-                  Chapter number
-                  <input
-                    value={chapterHint}
-                    onChange={(e) => setChapterHint(e.target.value)}
-                    placeholder="e.g. 2 (blank = all chapters)"
-                  />
-                </label>
-              </div>
-            )}
-
             <form onSubmit={handleSend}>
               <div className="chat-input-row">
                 {mode === 'chat' ? (
