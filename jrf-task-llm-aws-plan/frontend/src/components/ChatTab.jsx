@@ -586,11 +586,11 @@ export default function ChatTab({ restoredChat, onRestoreConsumed }) {
             {mode === 'summarize_chapter' && (
               <div className="sum-options">
                 <label>
-                  Chapter hint (optional)
+                  Chapter number
                   <input
                     value={chapterHint}
                     onChange={(e) => setChapterHint(e.target.value)}
-                    placeholder="e.g. Chapter 2: Housing Policy"
+                    placeholder="e.g. 2 (blank = all chapters)"
                   />
                 </label>
               </div>
