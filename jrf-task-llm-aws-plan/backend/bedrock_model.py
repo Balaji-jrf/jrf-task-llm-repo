@@ -1,20 +1,23 @@
-"""
-bedrock_model.py — replaces local_model.py.
+"""Grounded document answering through Amazon Bedrock Converse."""
 
-Same answer_question() signature and output dict shape.
-Swaps ChatLlamaCpp / GGUF inference for Amazon Bedrock invoke_model().
-"""
-
-import json
 import logging
 import os
+import re
 import time
 
 import boto3
 
 _LOG = logging.getLogger(__name__)
+_INLINE_CITATION = re.compile(r"\[(src\d+(?:\s*,\s*src\d+)*)\]", re.IGNORECASE)
+_STOP_WORDS = {
+    "about", "after", "also", "and", "are", "because", "been", "being", "but",
+    "can", "could", "does", "for", "from", "had", "has", "have", "into", "its",
+    "more", "most", "not", "our", "over", "said", "should", "than", "that",
+    "the", "their", "them", "there", "these", "they", "this", "those", "through",
+    "under", "was", "were", "which", "while", "with", "would",
+}
 
-BEDROCK_REGION = os.environ.get("AWS_REGION", "ap-southeast-2")
+DEFAULT_BEDROCK_REGION = os.environ.get("AWS_REGION", "ap-southeast-2")
 
 # Catalogue of available Bedrock models (mirrors local GGUF catalogue shape)
 BEDROCK_MODELS = [
@@ -22,20 +25,37 @@ BEDROCK_MODELS = [
         "model_id": "amazon.nova-lite-v1:0",
         "display_name": "Nova Lite",
         "description": "Fast, cost-efficient — good for quick factual questions",
+        "region": "ap-southeast-2",
     },
     {
         "model_id": "amazon.nova-pro-v1:0",
         "display_name": "Nova Pro",
         "description": "Balanced — detailed research answers",
+        "region": "ap-southeast-2",
     },
     {
         "model_id": "meta.llama3-1-8b-instruct-v1:0",
         "display_name": "Llama 3.1 8B",
-        "description": "Open-weight alternative for comparison",
+        "description": "Open-weight alternative (US West region)",
+        "region": "us-west-2",
     },
 ]
 
-_bedrock = boto3.client("bedrock-runtime", region_name=BEDROCK_REGION)
+_bedrock_clients = {}
+
+
+def _bedrock_client(model_id):
+    model = next((entry for entry in BEDROCK_MODELS if entry["model_id"] == model_id), None)
+    if model is None:
+        raise ValueError(f"Unsupported Bedrock model: {model_id}")
+    region = model.get("region", DEFAULT_BEDROCK_REGION)
+    if region not in _bedrock_clients:
+        _bedrock_clients[region] = boto3.client("bedrock-runtime", region_name=region)
+    return _bedrock_clients[region]
+
+
+def is_supported_model(model_id):
+    return any(model["model_id"] == model_id for model in BEDROCK_MODELS)
 
 
 def list_models() -> list[dict]:
@@ -51,7 +71,7 @@ def list_models() -> list[dict]:
 
 
 def _build_prompt(question: str, context_chunks: list[dict], history: list[dict]) -> tuple:
-    """Build Bedrock messages. Truncates each chunk to keep context focused."""
+    """Build Bedrock messages with page-specific evidence and citation instructions."""
     system = (
         "You are a precise research assistant for the BREATHE project. "
         "You are given excerpts from OCR-scanned documents. "
@@ -61,20 +81,23 @@ def _build_prompt(question: str, context_chunks: list[dict], history: list[dict]
         "Do NOT generate generic or background knowledge answers. "
         "If the answer is in the text, quote or list it specifically. "
         "If something is not in the excerpts, say so. "
-        "Always cite which source_id each piece of information came from."
+        "CITATION RULES: put source markers immediately after the sentence or bullet "
+        "they support, for example [src1] or [src1, src3]. Never collect citations at "
+        "the end of the answer or in a separate references list. Cite every factual "
+        "paragraph and every factual bullet. Cite only source IDs whose text directly "
+        "supports that claim. Do not cite a page range when a single source page is "
+        "available. If no excerpt supports a claim, say the documents do not provide "
+        "the information; do not guess. Return source markers exactly as [src1], "
+        "[src2], etc.; do not omit markers from factual statements."
     )
 
-    # Truncate each chunk to 3000 chars — enough for specific facts, avoids flooding context
-    MAX_CHUNK_CHARS = 3000
     context_parts = []
     for c in context_chunks:
-        text = c["text"]
-        if len(text) > MAX_CHUNK_CHARS:
-            text = text[:MAX_CHUNK_CHARS] + "… [truncated]"
+        page = c.get("page", c.get("page_start", "?"))
+        content_type = c.get("content_type", "text")
         context_parts.append(
-            f"[{c['source_id']}] {c['filename']} "
-            f"(pages {c.get('page_start', c.get('page', '?'))}–{c.get('page_end', c.get('page', '?'))}):\n"
-            f"{text}"
+            f"[{c['source_id']}] {c['filename']} (document_id={c['document_id']}, "
+            f"page={page}, type={content_type}):\n{c['text']}"
         )
     context_text = "\n\n---\n\n".join(context_parts)
     user_content = f"Document excerpts:\n\n{context_text}\n\n---\n\nQuestion: {question}"
@@ -91,6 +114,95 @@ def _build_prompt(question: str, context_chunks: list[dict], history: list[dict]
     messages.append({"role": "user", "content": [{"text": user_content}]})
 
     return system, messages
+
+
+def _citation_ids(value: str) -> list[str]:
+    return [
+        source_id.strip().lower()
+        for marker in _INLINE_CITATION.findall(value)
+        for source_id in marker.split(",")
+    ]
+
+
+def _best_source_id(sentence: str, chunks_by_source: dict[str, dict],
+                    preferred_source_ids: list[str],
+                    trust_explicit_marker: bool = False) -> str | None:
+    words = {
+        word for word in re.findall(r"\w+", sentence.lower())
+        if len(word) > 2 and word not in _STOP_WORDS and not word.isdigit()
+    }
+    if not words:
+        return None
+
+    def rank(source_ids: list[str]) -> list[tuple[float, int, str]]:
+        candidates = []
+        for source_id in source_ids:
+            chunk = chunks_by_source[source_id]
+            chunk_words = {
+                word for word in re.findall(r"\w+", str(chunk.get("text", "")).lower())
+                if len(word) > 2 and word not in _STOP_WORDS and not word.isdigit()
+            }
+            overlap = len(words & chunk_words)
+            if overlap:
+                candidates.append((overlap / len(words), overlap, source_id))
+        return candidates
+
+    preferred = list(dict.fromkeys(
+        source_id for source_id in preferred_source_ids if source_id in chunks_by_source
+    ))
+    candidates = rank(preferred) if preferred else []
+    if not candidates and preferred and trust_explicit_marker:
+        return preferred[0]
+    if not candidates:
+        candidates = rank(list(chunks_by_source))
+    return max(candidates)[2] if candidates else None
+
+
+def _add_inline_citations(text: str, context_chunks: list[dict]) -> str:
+    """Keep model citations with claims and add a best-evidence citation if omitted."""
+    chunks_by_source = {
+        str(chunk.get("source_id", "")).lower(): chunk
+        for chunk in context_chunks
+        if chunk.get("source_id")
+    }
+    if not chunks_by_source:
+        return text
+
+    model_sources = [
+        source_id for source_id in dict.fromkeys(_citation_ids(text))
+        if source_id in chunks_by_source
+    ]
+    output_lines = []
+    for line in text.splitlines():
+        if _INLINE_CITATION.fullmatch(line.strip()):
+            continue
+        if not line.strip() or re.match(r"^\s{0,3}#{1,6}\s", line):
+            output_lines.append(line)
+            continue
+
+        marker_ids = [
+            source_id for source_id in dict.fromkeys(_citation_ids(line))
+            if source_id in chunks_by_source
+        ]
+        line_without_markers = _INLINE_CITATION.sub("", line).rstrip()
+        bullet = re.match(r"^(\s*(?:[-*+]|\d+[.)])\s+)(.*)$", line_without_markers)
+        prefix, content = (bullet.group(1), bullet.group(2)) if bullet else ("", line_without_markers)
+        sentences = re.split(r"(?<=[.!?])\s+(?=[\"'“‘(\[]*[A-Z0-9])", content)
+        formatted = []
+        for index, sentence in enumerate(sentences):
+            sentence = sentence.strip()
+            if not sentence:
+                continue
+            source_id = _best_source_id(
+                sentence,
+                chunks_by_source,
+                marker_ids or model_sources,
+                trust_explicit_marker=bool(marker_ids),
+            )
+            marker = f" [{source_id}]" if source_id else ""
+            formatted.append((prefix if index == 0 else "") + sentence + marker)
+        output_lines.extend(formatted or [line])
+    return "\n".join(output_lines)
 
 
 def answer_question(
@@ -110,18 +222,13 @@ def answer_question(
 
     t0 = time.perf_counter()
     try:
-        body = {
-            "messages": messages,
-            "system": [{"text": system_prompt}],
-            "inferenceConfig": {"maxTokens": 1500, "temperature": 0.1},
-        }
-        response = _bedrock.invoke_model(
+        response = _bedrock_client(model_id).converse(
             modelId=model_id,
-            body=json.dumps(body),
-            contentType="application/json",
-            accept="application/json",
+            messages=messages,
+            system=[{"text": system_prompt}],
+            inferenceConfig={"maxTokens": 1500, "temperature": 0.1},
         )
-        result = json.loads(response["body"].read())
+        result = response
         elapsed = time.perf_counter() - t0
 
         # Extract text — Nova returns content blocks like [{"text": "..."}] (no "type" field)
@@ -138,7 +245,9 @@ def answer_question(
             text = result.get("generation", result.get("content", "")).strip()
         _LOG.info("[BEDROCK] extracted text length=%d", len(text))
 
+        text = _add_inline_citations(text, context_chunks)
         usage = result.get("usage", {})
+        cited_source_ids = set(_citation_ids(text))
         return {
             "model_id": model_id,
             "display_name": display_name,
@@ -148,13 +257,15 @@ def answer_question(
                     "source_id": c["source_id"],
                     "document_id": c["document_id"],
                     "filename": c["filename"],
-                    "page": c.get("page_start", c["page"]),
-                    "page_start": c.get("page_start", c["page"]),
-                    "page_end": c.get("page_end", c["page"]),
+                    "page": c.get("page", c.get("page_start", 1)),
+                    "page_start": c.get("page", c.get("page_start", 1)),
+                    "page_end": c.get("page", c.get("page_end", 1)),
                     "bbox": c.get("bbox"),
-                    "text": c["text"][:300],
+                    "content_type": c.get("content_type", "text"),
+                    "text": c["text"],
                 }
                 for c in context_chunks
+                if c.get("source_id", "").lower() in cited_source_ids
             ],
             "sources": [],
             "usage": {

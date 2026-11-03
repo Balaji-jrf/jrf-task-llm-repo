@@ -1,13 +1,16 @@
-"""
-lambda_retrieval_llm.py — jrf-task-llm-retrieval
-Handler: lambda_retrieval_llm.lambda_handler
+"""Serve app metadata, chat history, and persisted document chunks.
+
+Flow:
+1. Handle CORS preflight and allow GET routes only.
+2. Resolve a health, model, chat-history, index-status, or chunk request.
+3. Query DynamoDB and return the response expected by the React app.
 
 Routes:
   GET /api/llm/health
   GET /api/llm/models
   GET /api/llm/chats
   GET /api/llm/chats/{chat_id}
-  GET /api/llm/documents/{document_id}/chunks   (chunk browser for citation panel)
+  GET /api/llm/documents/{document_id}/chunks
 """
 
 import json
@@ -66,16 +69,19 @@ def lambda_handler(event, context):
     # GET /api/llm/chats
     if path.endswith("/chats") and "chat_id" not in params:
         try:
-            resp = _chats_table.scan(
-                FilterExpression="turn_id = :m",
-                ExpressionAttributeValues={":m": "META"},
-                ProjectionExpression="chat_id, title, document_ids, model_ids, updated_at, turn_count",
-            )
-            chats = sorted(
-                resp.get("Items", []),
-                key=lambda c: c.get("updated_at", 0),
-                reverse=True,
-            )
+            chats, kwargs = [], {
+                "FilterExpression": "turn_id = :m",
+                "ExpressionAttributeValues": {":m": "META"},
+                "ProjectionExpression": "chat_id, title, document_ids, model_ids, updated_at, turn_count",
+            }
+            while True:
+                resp = _chats_table.scan(**kwargs)
+                chats.extend(resp.get("Items", []))
+                last_key = resp.get("LastEvaluatedKey")
+                if not last_key:
+                    break
+                kwargs["ExclusiveStartKey"] = last_key
+            chats.sort(key=lambda c: c.get("updated_at", 0), reverse=True)
             return _cors({"chats": chats})
         except Exception as exc:
             _LOG.exception("GET /chats failed")
@@ -85,10 +91,16 @@ def lambda_handler(event, context):
     if "chat_id" in params:
         chat_id = params["chat_id"]
         try:
-            resp = _chats_table.query(
-                KeyConditionExpression=Key("chat_id").eq(chat_id)
-            )
-            items = resp.get("Items", [])
+            items, kwargs = [], {
+                "KeyConditionExpression": Key("chat_id").eq(chat_id)
+            }
+            while True:
+                resp = _chats_table.query(**kwargs)
+                items.extend(resp.get("Items", []))
+                last_key = resp.get("LastEvaluatedKey")
+                if not last_key:
+                    break
+                kwargs["ExclusiveStartKey"] = last_key
             meta = next((i for i in items if i["turn_id"] == "META"), {})
             turns = sorted(
                 [i for i in items if i["turn_id"].startswith("TURN#")],
@@ -109,16 +121,50 @@ def lambda_handler(event, context):
     if "document_id" in params:
         doc_id = params["document_id"]
         try:
-            resp = _chunks_table.query(
-                KeyConditionExpression=Key("document_id").eq(doc_id),
-                ProjectionExpression="chunk_id, page_start, page_end, #p, element_count",
-                ExpressionAttributeNames={"#p": "page"},
+            status_only = (
+                (event.get("queryStringParameters") or {}).get("status_only", "").lower()
+                in {"1", "true", "yes"}
             )
-            chunks = sorted(
-                resp.get("Items", []),
-                key=lambda c: c.get("page_start", c.get("page", 0)),
-            )
-            return _cors({"document_id": doc_id, "chunks": chunks, "total": len(chunks)})
+            if status_only:
+                count, kwargs = 0, {
+                    "KeyConditionExpression": Key("document_id").eq(doc_id),
+                    "Select": "COUNT",
+                }
+                while True:
+                    resp = _chunks_table.query(**kwargs)
+                    count += resp.get("Count", 0)
+                    last_key = resp.get("LastEvaluatedKey")
+                    if not last_key:
+                        break
+                    kwargs["ExclusiveStartKey"] = last_key
+                return _cors({
+                    "document_id": doc_id,
+                    "total": count,
+                    "chunk_count": count,
+                    "index_status": "DONE" if count else "NOT_INDEXED",
+                })
+
+            chunks, kwargs = [], {
+                "KeyConditionExpression": Key("document_id").eq(doc_id),
+                "ProjectionExpression": "chunk_id, page_start, page_end, #p, content_type, element_count, doc_tag",
+                "ExpressionAttributeNames": {"#p": "page"},
+            }
+            while True:
+                resp = _chunks_table.query(**kwargs)
+                chunks.extend(resp.get("Items", []))
+                last_key = resp.get("LastEvaluatedKey")
+                if not last_key:
+                    break
+                kwargs["ExclusiveStartKey"] = last_key
+            chunks.sort(key=lambda c: (c.get("page_start", c.get("page", 0)), c.get("chunk_id", "")))
+            return _cors({
+                "document_id": doc_id,
+                "chunks": chunks,
+                "total": len(chunks),
+                "index_status": "DONE" if chunks else "NOT_INDEXED",
+                "chunk_count": len(chunks),
+                "doc_tag": chunks[0].get("doc_tag", "") if chunks else "",
+            })
         except Exception as exc:
             _LOG.exception("GET /documents/%s/chunks failed", doc_id)
             return _cors({"error": str(exc)}, 500)

@@ -1,16 +1,17 @@
-"""
-lambda_indexer.py — jrf-task-llm-indexer
-Handler: lambda_indexer.lambda_handler
+"""Fetch OCR documents, create searchable chunks, and persist them in DynamoDB.
+
+Flow:
+1. Validate the selected document IDs and create an asynchronous job.
+2. Fetch document metadata, then fetch its OCR JSON from the presigned URL.
+3. Hash and chunk the page-local text and table rows.
+4. Reuse unchanged chunks or replace old chunks, then save per-document results.
 
 Routes:
-  POST /api/llm/documents/index          → start indexing job (async self-invoke)
-  GET  /api/llm/documents/index/{job_id} → poll job status
-
-Fix: OCR API /document/{id} returns metadata + presigned URLs only.
-     The actual OCR JSON (with elements[]) lives at ocr_presigned_url.
-     _fetch_ocr_document() now does the two-step fetch matching ocr_source.py.
+  POST /api/llm/documents/index          Start an indexing job.
+  GET  /api/llm/documents/index/{job_id} Poll the job result.
 """
 
+import hashlib
 import json
 import logging
 import os
@@ -63,11 +64,7 @@ def _http_get_json(url: str) -> dict:
 
 
 def _fetch_ocr_document(document_id: str) -> dict:
-    """
-    Two-step fetch matching ocr_source.py:
-      1. GET /document/{id}  → metadata (status, filename, ocr_presigned_url)
-      2. GET ocr_presigned_url → actual OCR JSON with elements[]
-    """
+    """Fetch document metadata, then retrieve the OCR JSON from its signed URL."""
     meta_url = f"{OCR_API_BASE_URL}/document/{document_id}"
     _LOG.info("[OCR] Step 1 — fetching document metadata for %s", document_id)
     metadata = _http_get_json(meta_url)
@@ -105,12 +102,14 @@ def _fetch_ocr_document(document_id: str) -> dict:
         **ocr_data,
         "document_id": document_id,
         "filename": metadata.get("filename") or ocr_data.get("filename") or document_id,
+        "doc_name": metadata.get("doc_name") or metadata.get("filename") or document_id,
+        "doc_tag": metadata.get("doc_tag") or "",
     }
 
 
 def _floats_to_decimal(obj):
     """Recursively convert float values to Decimal for DynamoDB compatibility."""
-    from decimal import Decimal, ROUND_HALF_UP
+    from decimal import Decimal
     if isinstance(obj, float):
         # Round to 10dp to avoid DynamoDB precision issues
         return Decimal(str(round(obj, 10)))
@@ -131,14 +130,24 @@ def _write_chunks(chunks: list[dict]) -> None:
     _LOG.info("[DDB] Batch write complete")
 
 
-def _delete_existing_chunks(document_id: str) -> None:
-    _LOG.info("[DDB] Deleting existing chunks for document_id=%s", document_id)
-    resp = _chunks_table.query(
-        KeyConditionExpression=Key("document_id").eq(document_id),
-        ProjectionExpression="document_id, chunk_id",
-    )
-    items = resp.get("Items", [])
-    _LOG.info("[DDB] Found %d existing chunks to delete", len(items))
+def _existing_chunks(document_id: str) -> list[dict]:
+    items = []
+    kwargs = {
+        "KeyConditionExpression": Key("document_id").eq(document_id),
+        "ProjectionExpression": "document_id, chunk_id, source_hash, chunker_version",
+    }
+    while True:
+        response = _chunks_table.query(**kwargs)
+        items.extend(response.get("Items", []))
+        last_key = response.get("LastEvaluatedKey")
+        if not last_key:
+            return items
+        kwargs["ExclusiveStartKey"] = last_key
+
+
+def _delete_existing_chunks(document_id: str, items: list[dict] | None = None) -> None:
+    items = items if items is not None else _existing_chunks(document_id)
+    _LOG.info("[DDB] Deleting %d existing chunks for document_id=%s", len(items), document_id)
     with _chunks_table.batch_writer() as batch:
         for item in items:
             batch.delete_item(Key={"document_id": item["document_id"], "chunk_id": item["chunk_id"]})
@@ -166,12 +175,40 @@ def _run_indexing(job_id: str, document_ids: list[str]) -> None:
                 len(elements) if isinstance(elements, list) else "N/A",
             )
 
-            _delete_existing_chunks(doc_id)
-            chunks = chunk_document(ocr)
+            source_hash = hashlib.sha256(
+                json.dumps(ocr, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            ).hexdigest()
+            chunks = chunk_document(ocr, source_hash=source_hash)
             _LOG.info("[DOC] Chunked — document_id=%s  chunks=%d", doc_id, len(chunks))
+            if not chunks:
+                raise ValueError(f"Document {doc_id} has no searchable OCR text or table rows.")
 
+            existing = _existing_chunks(doc_id)
+            if (
+                len(existing) == len(chunks)
+                and all(
+                    item.get("source_hash") == source_hash
+                    and item.get("chunker_version") == chunks[0]["chunker_version"]
+                    for item in existing
+                )
+            ):
+                indexed.append({
+                    "document_id": doc_id,
+                    "chunks_indexed": 0,
+                    "chunks_reused": len(existing),
+                    "unchanged": True,
+                })
+                _LOG.info("[DOC] Reusing %d unchanged chunks for %s", len(existing), doc_id)
+                continue
+
+            _delete_existing_chunks(doc_id, existing)
             _write_chunks(chunks)
-            indexed.append({"document_id": doc_id, "chunks_indexed": len(chunks)})
+            indexed.append({
+                "document_id": doc_id,
+                "chunks_indexed": len(chunks),
+                "chunks_reused": 0,
+                "unchanged": False,
+            })
             _LOG.info("[DOC] SUCCESS document_id=%s  chunks_indexed=%d", doc_id, len(chunks))
 
         except Exception as exc:
@@ -220,8 +257,14 @@ def lambda_handler(event, context):
             document_ids = body.get("document_ids", [])
             _LOG.info("[POST] index request document_ids=%s", document_ids)
 
-            if not document_ids:
-                return _cors({"error": "document_ids required"}, 400)
+            if (
+                not isinstance(document_ids, list)
+                or not document_ids
+                or len(document_ids) > 5
+                or any(not isinstance(doc_id, str) or not doc_id.strip() for doc_id in document_ids)
+            ):
+                return _cors({"error": "document_ids must contain between 1 and 5 document IDs"}, 400)
+            document_ids = list(dict.fromkeys(doc_id.strip() for doc_id in document_ids))
 
             job_id = str(uuid.uuid4())
             _LOG.info("[POST] Creating job job_id=%s", job_id)
