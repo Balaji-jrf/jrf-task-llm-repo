@@ -18,10 +18,27 @@ const MODE_LABELS = {
   summarize_chapter: 'Chapter Summary',
 };
 
+const CANONICAL_CITATION = /\[(src\d+(?:\s*,\s*src\d+)*)\]/gi;
+const PAGE_QUALIFIED_CITATION = /\[((?:src\d+)(?:\s*,\s*src\d+)*)\s*,?\s*(?:page|p)\s*[:=.]?\s*\d+\]/gi;
+
+function normalizePageQualifiedCitations(text) {
+  return String(text).split('\n').map((line) => {
+    const existingIds = new Set(
+      [...line.matchAll(CANONICAL_CITATION)]
+        .flatMap(([, ids]) => ids.split(',').map((id) => id.trim().toLowerCase())),
+    );
+    return line.replace(PAGE_QUALIFIED_CITATION, (_marker, ids) => {
+      const missingIds = ids.split(',').map((id) => id.trim())
+        .filter((id) => !existingIds.has(id.toLowerCase()));
+      return missingIds.length ? `[${missingIds.join(', ')}]` : '';
+    });
+  }).join('\n');
+}
+
 function addInlineCitationLinks(answer) {
   const citations = answer.citations || [];
   const bySourceId = new Map(citations.map((citation) => [citation.source_id, citation]));
-  return String(answer.text || '').replace(/\[(src\d+(?:\s*,\s*src\d+)*)\]/gi, (marker, sourceIds) => {
+  return normalizePageQualifiedCitations(answer.text || '').replace(CANONICAL_CITATION, (marker, sourceIds) => {
     const links = sourceIds.split(',').map((sourceId) => sourceId.trim()).map((sourceId) => {
       const citation = bySourceId.get(sourceId);
       if (!citation) return sourceId;

@@ -335,6 +335,22 @@ class ChatRetrievalTests(unittest.TestCase):
         self.assertIn("- Vulnerable communities need health services. [src2]", result)
         self.assertNotIn("\n[src1, src2]", result)
 
+    def test_page_qualified_citations_are_normalized_to_source_ids(self):
+        chunks = [
+            {"source_id": "src1", "text": "Extreme heat means maximum temperatures."},
+            {"source_id": "src2", "text": "Vulnerable districts include Bidar."},
+        ]
+        raw = (
+            "Extreme heat means maximum temperatures. [src1, page=21]\n"
+            "- Vulnerable districts include Bidar. [src2, p.33]"
+        )
+        result = bedrock_model._add_inline_citations(raw, chunks)
+        self.assertEqual(
+            "Extreme heat means maximum temperatures. [src1]\n"
+            "- Vulnerable districts include Bidar. [src2]",
+            result,
+        )
+
     def test_invalid_or_unsupported_citations_are_not_fabricated(self):
         result = bedrock_model._add_inline_citations(
             "Unrelated astronomy claim [src99]",

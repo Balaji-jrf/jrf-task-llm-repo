@@ -8,7 +8,10 @@ import time
 import boto3
 
 _LOG = logging.getLogger(__name__)
-_INLINE_CITATION = re.compile(r"\[(src\d+(?:\s*,\s*src\d+)*)\]", re.IGNORECASE)
+_INLINE_CITATION = re.compile(
+    r"\[(src\d+(?:\s*,\s*src\d+)*)(?:\s*,?\s*(?:page|p)\s*[:=.]?\s*\d+)?\]",
+    re.IGNORECASE,
+)
 _STOP_WORDS = {
     "about", "after", "also", "and", "are", "because", "been", "being", "but",
     "can", "could", "does", "for", "from", "had", "has", "have", "into", "its",
