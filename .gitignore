@@ -6,3 +6,5 @@ frontend/dist/
 frontend/build/
 frontend/node_modules/
 **/node_modules/
+jrf-task-llm-aws-plan/frontend/node_modules/
+jrf-task-llm-aws-plan/frontend/build/
